@@ -299,10 +299,23 @@ def seleccionar_servicios_multiples(categoria):
         else:
             print(f"{ROJO}[-] Error: Ingrese solo números válidos.{RESET}")
 
-def obtener_ips_usadas(db, equipo_ignorado=None):
-    ips = set()
+# --- NUEVA FUNCIÓN: VALIDACIÓN DE HOSTNAMES GLOBALES ---
+def obtener_hostnames_usados(db, equipo_ignorado=None):
+    """Retorna un set con todos los hostnames en uso a nivel GLOBAL (en minúsculas)."""
+    hostnames = set()
     for dispositivos in db.values():
         for d in dispositivos:
+            if d == equipo_ignorado:
+                continue
+            hostnames.add(d['nombre'].lower())
+    return hostnames
+
+# --- MODIFICACIÓN: VALIDACIÓN DE IPs LOCALES ---
+def obtener_ips_usadas_en_campus(db, campus_actual, equipo_ignorado=None):
+    """Retorna un set con todas las IPs en uso SOLO DENTRO DEL MISMO CAMPUS."""
+    ips = set()
+    if campus_actual in db:
+        for d in db[campus_actual]:
             if d == equipo_ignorado:
                 continue
             if 'interfaces' in d:
@@ -310,9 +323,9 @@ def obtener_ips_usadas(db, equipo_ignorado=None):
                     ips.add(intf['ip'])
     return ips
 
-def agregar_interfaces(db, equipo_actual=None):
+def agregar_interfaces(db, campus_actual, equipo_actual=None):
     interfaces = []
-    ips_en_uso = obtener_ips_usadas(db, equipo_actual)
+    ips_en_uso_local = obtener_ips_usadas_en_campus(db, campus_actual, equipo_actual)
     
     print(f"\n{AZUL}--- CONFIGURACIÓN DE INTERFACES ---{RESET}")
     print("Ingrese las interfaces requeridas. Deje el nombre del puerto en blanco para finalizar.")
@@ -331,8 +344,8 @@ def agregar_interfaces(db, equipo_actual=None):
                     print(f"{ROJO}[-] IP Reservada. Ingrese una dirección unicast válida.{RESET}")
                     continue
                     
-                if ip in ips_en_uso or ip in [i['ip'] for i in interfaces]:
-                    print(f"{ROJO}[-] Conflicto de IP: La dirección {ip} ya se encuentra asignada a otro equipo en la topología.{RESET}")
+                if ip in ips_en_uso_local or ip in [i['ip'] for i in interfaces]:
+                    print(f"{ROJO}[-] Conflicto Local: La dirección {ip} ya se encuentra asignada a otro equipo en el campus '{campus_actual}'.{RESET}")
                     continue
                     
                 break
@@ -377,9 +390,20 @@ def anadir_dispositivo(db, usuario):
                 break
             print(f"{ROJO}[-] Opción inválida.{RESET}")
 
-        nombre = input_b(f"\nIngrese el Hostname para el equipo {modelo}")
+        # --- VALIDACIÓN DE HOSTNAME GLOBAL EN CREACIÓN ---
+        hostnames_globales = obtener_hostnames_usados(db)
+        while True:
+            nombre = input_b(f"\nIngrese el Hostname para el equipo {modelo}").strip()
+            if not nombre:
+                print(f"{ROJO}[-] El Hostname no puede estar vacío.{RESET}")
+                continue
+            if nombre.lower() in hostnames_globales:
+                print(f"{ROJO}[-] Conflicto DNS: El Hostname '{nombre}' ya está en uso en la red global.{RESET}")
+            else:
+                break
 
-        interfaces = agregar_interfaces(db)
+        # Interfaces con validación local (se pasa el campus)
+        interfaces = agregar_interfaces(db, campus_seleccionado)
 
         vlans = input_b("\nVLANs asignadas (Deje en blanco o indique '0' si no requiere)")
         if not vlans or vlans == "0" or vlans.lower() == "ninguno":
@@ -441,8 +465,18 @@ def editar_dispositivo(db, usuario):
             print(f"\n{AZUL}Modificando configuración de: {disp['nombre']}{RESET}")
             print("Presione Enter en los campos que desee conservar sin cambios.")
             
-            nuevo_nom = input(f"Nuevo Hostname [{disp['nombre']}]: ").strip()
-            if nuevo_nom: disp['nombre'] = nuevo_nom
+            # --- VALIDACIÓN DE HOSTNAME GLOBAL EN EDICIÓN ---
+            hostnames_globales = obtener_hostnames_usados(db, equipo_ignorado=disp)
+            while True:
+                nuevo_nom = input(f"Nuevo Hostname [{disp['nombre']}]: ").strip()
+                if not nuevo_nom:
+                    # El usuario presionó enter, mantiene el nombre actual
+                    break
+                if nuevo_nom.lower() in hostnames_globales:
+                    print(f"{ROJO}[-] Conflicto DNS: El Hostname '{nuevo_nom}' ya está en uso en la red global.{RESET}")
+                else:
+                    disp['nombre'] = nuevo_nom
+                    break
             
             nueva_vlan = input(f"Nuevas VLANs [{disp['vlans']}]: ").strip()
             if nueva_vlan: disp['vlans'] = nueva_vlan
@@ -452,7 +486,7 @@ def editar_dispositivo(db, usuario):
             
             ree_intf = input_b("\n¿Requiere reconfigurar las interfaces de red? (s/n)")
             if ree_intf.lower() == 's':
-                disp['interfaces'] = agregar_interfaces(db, equipo_actual=disp)
+                disp['interfaces'] = agregar_interfaces(db, campus_sel, equipo_actual=disp)
             
             guardar_db(db)
             exportar_txt(db)
